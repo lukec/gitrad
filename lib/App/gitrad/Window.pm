@@ -1,11 +1,11 @@
-package Socialtext::Wikrad::Window;
+package App::gitrad::Window;
 use strict;
 use warnings;
 use base 'Curses::UI::Window';
 use Curses qw/KEY_ENTER/;
-use Socialtext::Wikrad qw/$App/;
+use App::gitrad qw/$App/;
 use Socialtext::Resting;
-use Socialtext::EditPage;
+use App::gitrad::Editor;
 use JSON;
 use Data::Dumper;
 
@@ -16,7 +16,7 @@ sub new {
     $self->_create_ui_widgets;
 
     my ($v, $p, $w, $t) = map { $self->{$_} } 
-                          qw/viewer page_box workspace_box tag_box/;
+                          qw/viewer page_box tag_box/;
     $v->focus;
     $v->set_binding( \&choose_frontlink,         'g' );
     $v->set_binding( \&choose_backlink,          'B' );
@@ -37,7 +37,6 @@ sub new {
     $v->set_binding( sub { editor(pull_includes => 1) }, 'E' );
     $v->set_binding( sub { $v->focus },                 'v' );
     $v->set_binding( sub { $p->focus; $self->{cb}{page}->($p) },      'p' );
-    $v->set_binding( sub { $w->focus; $self->{cb}{workspace}->($w) }, 'w' );
     $v->set_binding( sub { $t->focus; $self->{cb}{tag}->($t) },       't' );
 
     $v->set_binding( sub { $v->viewer_enter }, KEY_ENTER );
@@ -58,7 +57,7 @@ sub new {
 }
 
 sub show_help {
-    $App->{cui}->dialog( 
+    $App->cui->dialog( 
         -fg => 'yellow',
         -bg => 'blue',
         -title => 'Help:',
@@ -74,7 +73,6 @@ Basic Commands:
 
 Awesome Commands:
  0/G - move to beginning/end of page
- w   - set workspace
  p   - set page
  t   - tagged pages
  s   - search
@@ -100,88 +98,83 @@ EOT
 }
 
 sub add_pagetag {
-    my $r = $App->{rester};
-    $App->{cui}->status('Fetching page tags ...');
-    $r->accept('text/plain');
+    my $g = $App->git;
+    $App->cui->status('Fetching page tags ...');
     my $page_name = $App->get_page;
-    my @tags = $r->get_pagetags($page_name);
-    $App->{cui}->nostatus;
+    my @tags = $g->get_pagetags($page_name);
+    $App->cui->nostatus;
     my $question = "Enter new tags, separate with commas, prefix with '-' to remove\n  ";
     if (@tags) {
         $question .= join(", ", @tags) . "\n";
     }
-    my $newtags = $App->{cui}->question($question) || '';
+    my $newtags = $App->cui->question($question) || '';
     my @new_tags = split(/\s*,\s*/, $newtags);
     if (@new_tags) {
-        $App->{cui}->status("Tagging $page_name ...");
+        $App->cui->status("Tagging $page_name ...");
         for my $t (@new_tags) {
             if ($t =~ s/^-//) {
-                eval { $r->delete_pagetag($page_name, $t) };
+                eval { $g->delete_pagetag($page_name, $t) };
             }
             else {
-                $r->put_pagetag($page_name, $t);
+                $g->put_pagetag($page_name, $t);
             }
         }
-        $App->{cui}->nostatus;
+        $App->cui->nostatus;
     }
 }
 
 sub show_metadata {
-    my $r = $App->{rester};
-    $App->{cui}->status('Fetching page metadata ...');
-    $r->accept('application/json');
+    my $g = $App->git;
+    $App->cui->status('Fetching page metadata ...');
     my $page_name = $App->get_page;
-    my $json_text = $r->get_page($page_name);
+    my $json_text = $g->get_page($page_name);
     my $page_data = jsonToObj($json_text);
-    $App->{cui}->nostatus;
-    $App->{cui}->dialog(
+    $App->cui->nostatus;
+    $App->cui->dialog(
         -title => "$page_name metadata",
         -message => Dumper $page_data,
     );
 }
 
 sub new_blog_post {
-    my $r = $App->{rester};
+    my $g = $App->git;
 
     (my $username = qx(id)) =~ s/^.+?\(([^)]+)\).+/$1/s;
     my @now = localtime;
     my $default_post = sprintf '%s, %4d-%02d-%02d', $username,
                                $now[5] + 1900, $now[4] + 1, $now[3];
-    my $page_name = $App->{cui}->question(
+    my $page_name = $App->cui->question(
         -question => 'Enter name of new blog post:',
         -answer   => $default_post,
     ) || '';
     return unless $page_name;
 
-    $App->{cui}->status('Fetching tags ...');
-    $r->accept('text/plain');
+    $App->cui->status('Fetching tags ...');
     my @tags = _get_current_tags($App->get_page);
-    $App->{cui}->nostatus;
+    $App->cui->nostatus;
 
     $App->set_page($page_name);
     editor( tags => @tags );
 }
 
 sub show_uri {
-    my $r = $App->{rester};
-    my $uri = $r->server . '/' . $r->workspace . '/?' 
-              . Socialtext::Resting::_name_to_id($App->get_page);
-    $App->{cui}->dialog( -title => "Current page:", -message => " $uri" );
+    my $g = $App->git;
+    my $output = $g->run('remote', '-v');
+    $App->cui->dialog( -title => "Current page:", -message => " $output" );
 }
 
 sub clone_page {
     my @args = @_; # obj, key, args
     my $template_page = $args[2] || $App->get_page;
-    my $r = $App->{rester};
-    $r->accept('text/x.socialtext-wiki');
-    my $template = $r->get_page($template_page);
-    my $new_page = $App->{cui}->question("Title for new page:");
+    my $g = $App->git;
+    my $template = $g->get_page($template_page);
+    my $new_page = $App->cui->question("Title for new page:");
     if ($new_page) {
-        $App->{cui}->status("Creating page ...");
-        $r->put_page($new_page, $template);
+        $App->cui->status("Creating page ...");
+        $g->put_page($new_page, $template);
         my @tags = _get_current_tags($template_page);
-        $r->put_pagetag($new_page, $_) for @tags;
-        $App->{cui}->nostatus;
+        $g->put_pagetags($new_page, \@tags);
+        $App->cui->nostatus;
 
         $App->set_page($new_page);
     }
@@ -189,18 +182,16 @@ sub clone_page {
 
 sub _get_current_tags {
     my $page = shift;
-    my $r = $App->{rester};
-    $r->accept('text/plain');
-    return grep { $_ ne 'template' } $r->get_pagetags($page);
+    return grep { $_ ne 'template' } $App->git->get_pagetags($page);
 }
 
 sub clone_page_from_template {
     my $tag = 'template';
-    $App->{cui}->status('Fetching pages tagged $tag...');
+    $App->cui->status('Fetching pages tagged $tag...');
     $App->{rester}->accept('text/plain');
     my @pages = $App->{rester}->get_taggedpages($tag);
-    $App->{cui}->nostatus;
-    $App->{win}->listbox(
+    $App->cui->nostatus;
+    $App->win->listbox(
         -title => 'Choose a template',
         -values => \@pages,
         change_cb => sub { clone_page(undef, undef, shift) },
@@ -208,32 +199,26 @@ sub clone_page_from_template {
 }
 
 sub show_includes {
-    my $r = $App->{rester};
-    my $viewer = $App->{win}{viewer};
-    $App->{cui}->status('Fetching included pages ...');
+    my $viewer = $App->win->{viewer};
+    $App->cui->status('Fetching included pages ...');
     my $page_text = $viewer->text;
     while($page_text =~ m/\{include:? \[(.+?)\]\}/g) {
         my $included_page = $1;
-        $r->accept('text/x.socialtext-wiki');
-        my $included_text = $r->get_page($included_page);
+        my $included_text = $App->git->get_page($included_page);
         my $new_text = "-----Included Page----- [$included_page]\n"
                        . "$included_text\n"
                        . "-----End Include----- \n";
         $page_text =~ s/{include:? \[\Q$included_page\E\]}/$new_text/;
     }
     $viewer->text($page_text);
-    $App->{cui}->nostatus;
+    $App->cui->nostatus;
 }
 
 sub recently_changed {
-    my $r = $App->{rester};
-    $App->{cui}->status('Fetching recent changes ...');
-    $r->accept('text/plain');
-    $r->count(250);
-    my @recent = $r->get_taggedpages('Recent changes');
-    $r->count(0);
-    $App->{cui}->nostatus;
-    $App->{win}->listbox(
+    $App->cui->status('Fetching recent changes ...');
+    my @recent = ["TODO FIXME"];
+    $App->cui->nostatus;
+    $App->win->listbox(
         -title => 'Choose a page link',
         -values => \@recent,
         change_cb => sub {
@@ -256,12 +241,12 @@ sub choose_link {
     my $text = shift;
     my $arg = shift;
     my $page = $App->get_page;
-    $App->{cui}->status("Fetching ${text}s");
+    $App->cui->status("Fetching ${text}s");
     $App->{rester}->accept('text/plain');
     my @links = $App->{rester}->$method($page, $arg);
-    $App->{cui}->nostatus;
+    $App->cui->nostatus;
     if (@links) {
-        $App->{win}->listbox(
+        $App->win->listbox(
             -title => "Choose a $text",
             -values => \@links,
             change_cb => sub {
@@ -271,86 +256,34 @@ sub choose_link {
         );
     }
     else {
-        $App->{cui}->error("No ${text}s");
+        $App->cui->error("No ${text}s");
     }
 }
 
 sub editor {
     my %extra_args = @_;
-    $App->{cui}->status('Editing page');
-    $App->{cui}->leave_curses;
+    $App->cui->status('Editing page');
+    $App->cui->leave_curses;
     my $tags = delete $extra_args{tags};
 
-    my $ep = Socialtext::EditPage->new( 
-        rester => $App->{rester},
-        %extra_args,
-    );
-    my $page = $App->get_page;
-    $ep->edit_page(
-        page => $page,
-        ($tags ? (tags => $tags) : ()),
-        summary_callback => sub {
-            $App->{cui}->reset_curses;
-
-            my $question = q{Edit summary? (Put '* ' at the front to }
-                         . q{also signal it!).};
-            my $summary = $App->{cui}->question($question);
-            if ($summary and $summary =~ s/^\*\s//) {
-                eval { # server may not support it, so fail silently.
-                    my $wksp = $App->{rester}->workspace;
-                    my $signal = qq{"$summary" (edited {link: $wksp [$page]})};
-                    $App->{cui}->status('Squirelling away signal');
-                    $App->{rester}->post_signal($signal);
-                };
-                warn $@ if $@;
-            }
-
-            $App->{cui}->leave_curses;
-            return $summary;
-        },
-    );
-
-    $App->{cui}->reset_curses;
+    $App->git->edit_page(page => $App->get_page);
+    $App->cui->reset_curses;
     $App->load_page;
 }
 
-sub workspace_change {
-    my $new_wksp = $App->{win}{workspace_box}->text;
-    my $r = $App->{rester};
-    if ($new_wksp) {
-        $App->set_page(undef, $new_wksp);
-    }
-    else {
-        $App->{cui}->status('Fetching list of workspaces ...');
-        $r->accept('text/plain');
-        my @workspaces = $r->get_workspaces;
-        $App->{cui}->nostatus;
-        $App->{win}->listbox(
-            -title => 'Choose a workspace',
-            -values => \@workspaces,
-            change_cb => sub {
-                my $wksp = shift;
-                $App->set_page(undef, $wksp);
-            },
-        );
-    }
-}
-
 sub tag_change {
-    my $r = $App->{rester};
-    my $tag = $App->{win}{tag_box}->text;
+    my $tag = $App->win->{tag_box}->text;
 
     my $chose_tagged_page = sub {
         my $tag = shift;
-        $App->{cui}->status('Fetching tagged pages ...');
-        $r->accept('text/plain');
-        my @pages = $r->get_taggedpages($tag);
-        $App->{cui}->nostatus;
+        $App->cui->status('Fetching tagged pages ...');
+        my @pages = $App->git->get_taggedpages($tag);
+        $App->cui->nostatus;
         if (@pages == 0) {
-            $App->{cui}->dialog("No pages tagged '$tag' found ...");
+            $App->cui->dialog("No pages tagged '$tag' found ...");
             return;
         }
-        $App->{win}->listbox(
+        $App->win->listbox(
             -title => 'Choose a tagged page',
             -values => \@pages,
             change_cb => sub {
@@ -363,11 +296,10 @@ sub tag_change {
         $chose_tagged_page->($tag);
     }
     else {
-        $App->{cui}->status('Fetching workspace tags ...');
-        $r->accept('text/plain');
-        my @tags = $r->get_workspace_tags;
-        $App->{cui}->nostatus;
-        $App->{win}->listbox(
+        $App->cui->status('Fetching tags ...');
+        my @tags = $App->git->get_tags;
+        $App->cui->nostatus;
+        $App->win->listbox(
             -title => 'Choose a tag:',
             -values => \@tags,
             change_cb => sub {
@@ -379,21 +311,14 @@ sub tag_change {
 }
 
 sub search {
-    my $r = $App->{rester};
-
-    my $query = $App->{cui}->question( 
+    my $query = $App->cui->question( 
         -question => "Search"
     ) || return;
 
-    $App->{cui}->status("Looking for pages matching your query");
-    $r->accept('text/plain');
-    $r->query($query);
-    $r->order('newest');
-    my @matches = $r->get_pages;
-    $r->query('');
-    $r->order('');
-    $App->{cui}->nostatus;
-    $App->{win}->listbox(
+    $App->cui->status("Looking for pages matching your query");
+    my @matches = $App->git->get_pages(query => $query);;
+    $App->cui->nostatus;
+    $App->win->listbox(
         -title => 'Choose a page link',
         -values => \@matches,
         change_cb => sub {
@@ -403,35 +328,18 @@ sub search {
     );
 }
 
-sub change_server {
-    my $r = $App->{rester};
-    my $old_server = $r->server;
-    my $question = <<EOT;
-Enter the REST server you'd like to use:
-  (Current server: $old_server)
-EOT
-    my $new_server = $App->{cui}->question( 
-        -question => $question,
-        -answer   => $old_server,
-    ) || '';
-    if ($new_server and $new_server ne $old_server) {
-        $r->server($new_server);
-    }
-}
-
 sub save_to_file {
-    my $r = $App->{rester};
     my $filename;
     eval {
         my $page_name = Socialtext::Resting::name_to_id($App->get_page);
         $filename = $App->save_dir . "/$page_name.wiki";
 
         open(my $fh, ">$filename") or die "Can't open $filename: $!";
-        print $fh $App->{win}{viewer}->text;
+        print $fh $App->win->{viewer}->text;
         close $fh or die "Couldn't write $filename: $!";
     };
     my $msg = $@ ? "Error: $@" : "Saved to $filename";
-    $App->{cui}->dialog(
+    $App->cui->dialog(
         -title => "Saved page to disk",
         -message => $msg,
     );
@@ -452,7 +360,7 @@ sub toggle_editable {
         $w->focus;
     }
     else {
-        $App->{win}{viewer}->focus;
+        $App->win->{viewer}->focus;
     }
 
     $cb->() if $cb and !$readonly;
@@ -468,10 +376,6 @@ sub toggle_editable {
 sub _create_ui_widgets {
     my $self = shift;
     my %widget_positions = (
-        workspace_field => {
-            -width => 18,
-            -x     => 1,
-        },
         page_field => {
             -width => 45,
             -x     => 32,
@@ -504,16 +408,6 @@ sub _create_ui_widgets {
     }
 
     #######################################
-    # Create the Workspace label and field
-    #######################################
-    my $wksp_cb = sub { toggle_editable( shift, \&workspace_change ) };
-    $self->{cb}{workspace} = $wksp_cb;
-    $self->{workspace_box} = $self->add_field('Workspace:', $wksp_cb,
-        -text => $App->{rester}->workspace,
-        %{ $widget_positions{workspace_field} },
-    );
-
-    #######################################
     # Create the Page label and field
     #######################################
     my $page_cb = sub { toggle_editable( shift, sub { $App->load_page } ) };
@@ -541,7 +435,7 @@ sub _create_ui_widgets {
     # Create the page Viewer
     #######################################
     $self->{viewer} = $self->add(
-        'viewer', 'Socialtext::Wikrad::PageViewer',
+        'viewer', 'App::gitrad::PageViewer',
         -border => 1,
         %{ $widget_positions{page_viewer} },
     );
@@ -549,7 +443,7 @@ sub _create_ui_widgets {
 
 sub listbox {
     my $self = shift;
-    $App->{win}->add('listbox', 'Socialtext::Wikrad::Listbox', @_)->focus;
+    $App->win->add('listbox', 'App::gitrad::Listbox', @_)->focus;
 }
 
 sub add_field {

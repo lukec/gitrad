@@ -1,0 +1,41 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Getopt::Long;
+use Git::Repository;
+use FindBin;
+use lib "$FindBin::RealBin/../lib";
+use App::gitrad;
+
+my %opts;
+GetOptions( 'dir' => \$opts{dir}, ) or usage();
+
+usage("Sorry, '$opts{dir}' isn't a directory.") if $opts{dir} and !-d $opts{dir};
+$opts{dir} ||= dwim_find_repo_directory();
+usage("Couldn't find a suitable git repo. Try using --dir?") unless $opts{dir};
+
+my $app = App::gitrad->new(git_dir => $opts{dir});
+$app->set_page(undef);
+$app->run;
+
+exit;
+
+sub usage {
+    my $error = shift || "Sorry, try again.";
+    die <<EOT;
+$error
+
+USAGE: wikrad [<rester options>] ['Page Name']
+
+gitrad options:
+  --dir=directory   Specify the directory to use as the git wiki repo
+EOT
+}
+
+sub dwim_find_repo_directory {
+    my $here = Git::Repository->new(work_tree => '.');
+    return unless -d $here->git_dir;
+    (my $wiki_dir = $here->git_dir) =~ s/([^\/]+)\/\.git$/$1.wiki\/.git/;
+    return $wiki_dir if -d $wiki_dir;
+    return $here->work_tree;
+}

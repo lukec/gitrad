@@ -1,10 +1,10 @@
-package Socialtext::Wikrad::PageViewer;
+package App::gitrad::PageViewer;
 use strict;
 use warnings;
 use Curses::UI::Common;
 use base 'Curses::UI::TextEditor';
 use Curses;
-use Socialtext::Wikrad qw/$App/;
+use App::gitrad qw/$App/;
 
 sub new {
     my $class = shift;
